@@ -8,9 +8,11 @@ public static class Converter
 {
     private const int NumberOfLinesToRemoveAtEnd = 4;
 
+    private static readonly char[] CodeOrder = { 'G', 'X', 'Y', 'I', 'J', 'M', 'S', 'F', 'T' };
+    private static readonly Regex CompiledRegex = new(@"([MGXYZIJFST])([\-0-9.]+)*", RegexOptions.Compiled);
+
     private static List<string> _allNewLines = new();
     private static string _lastComment = string.Empty;
-    private static readonly Regex CompiledRegex = new(@"([MGXYZIJFST])([\-0-9.]+)*", RegexOptions.Compiled);
 
     //Current states
     private static int _stateM;
@@ -84,9 +86,8 @@ public static class Converter
         var desiredM = 5;
         var desiredS = 0;
 
-        if (lineCodes.ContainsKey('Z'))
+        if (lineCodes.TryGetValue('Z', out var zValue))
         {
-            var zValue = lineCodes['Z'];
             if (Math.Abs(zValue - 2.0) < 0.01)
                 justAdd = false;
             if (Math.Abs(zValue - 10.0) < 0.01)
@@ -121,10 +122,8 @@ public static class Converter
             }
         }
 
-        if (lineCodes.ContainsKey('X') && lineCodes['X'] == 0.0 && lineCodes.ContainsKey('Y') && lineCodes['Y'] == 0.0)
-        {
-            _homed = true;
-        }
+        if (lineCodes.ContainsKey('X') && lineCodes['X'] == 0.0 && lineCodes.ContainsKey('Y') &&
+            lineCodes['Y'] == 0.0) _homed = true;
 
         if (lineCodes.ContainsKey('Z'))
             if (_stateM != desiredM || _stateS != desiredS)
@@ -132,10 +131,7 @@ public static class Converter
                 _stateS = desiredS;
                 _stateM = desiredM;
                 lineCodes['M'] = desiredM;
-                if (desiredM != 5)
-                {
-                    lineCodes['S'] = desiredS;
-                }
+                if (desiredM != 5) lineCodes['S'] = desiredS;
             }
 
         if (lineCodes.ContainsKey('F')) lineCodes['F'] = FoverMs(_stateM);
@@ -144,9 +140,8 @@ public static class Converter
             return;
 
         var relineBuilder = new StringBuilder();
-        char[] codeOrder = { 'G', 'X', 'Y', 'I', 'J', 'M', 'S', 'F', 'T' };
 
-        foreach (var code in codeOrder)
+        foreach (var code in CodeOrder)
             if (lineCodes.TryGetValue(code, out var lineCode))
                 relineBuilder.Append($"{code}{lineCode} ");
 
@@ -171,15 +166,12 @@ public static class Converter
         var blocks = new List<Block>();
         Block currentBlock = null;
         var isInBlock = false;
-
-        // Temporary storage for lines outside blocks
         var nonBlockLines = new List<string>();
 
         foreach (var line in lines)
             if (line.Contains("M3", StringComparison.OrdinalIgnoreCase))
             {
                 if (isInBlock && currentBlock != null)
-                    // Add the current block before starting a new one
                     blocks.Add(currentBlock);
 
                 currentBlock = new Block();
@@ -200,30 +192,39 @@ public static class Converter
             {
                 if (isInBlock && currentBlock != null)
                 {
-                    // Add lines to the current block
                     currentBlock.Lines.Add(line);
-
-                    // Parse X, Y, and S values
-                    var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    foreach (var part in parts)
-                        if (part.StartsWith("X", StringComparison.OrdinalIgnoreCase))
-                            currentBlock.XValues.Add(double.Parse(part[1..]));
-                        else if (part.StartsWith("Y", StringComparison.OrdinalIgnoreCase))
-                            currentBlock.YValues.Add(double.Parse(part[1..]));
-                        else if (part.StartsWith("S", StringComparison.OrdinalIgnoreCase))
-                            currentBlock.SValues.Add(int.Parse(part[1..]));
+                    ParseLineValues(line, currentBlock);
                 }
                 else
                 {
-                    // Collect lines outside of blocks
                     nonBlockLines.Add(line);
                 }
             }
 
-        // Add the last block if it exists
-        if (isInBlock && currentBlock != null) blocks.Add(currentBlock);
+        if (isInBlock && currentBlock != null)
+            blocks.Add(currentBlock);
 
-        // Process each block to remove lines before S100 if S15 and S100 exist in the block
+        ProcessBlocks(blocks);
+        _allNewLines.Clear();
+        _allNewLines.AddRange(nonBlockLines);
+        AddBlocksToOutput(blocks);
+        _allNewLines.Add("M30");
+    }
+
+    private static void ParseLineValues(string line, Block block)
+    {
+        var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var part in parts)
+            if (part.StartsWith("X", StringComparison.OrdinalIgnoreCase))
+                block.XValues.Add(double.Parse(part[1..]));
+            else if (part.StartsWith("Y", StringComparison.OrdinalIgnoreCase))
+                block.YValues.Add(double.Parse(part[1..]));
+            else if (part.StartsWith("S", StringComparison.OrdinalIgnoreCase))
+                block.SValues.Add(int.Parse(part[1..]));
+    }
+
+    private static void ProcessBlocks(List<Block> blocks)
+    {
         foreach (var block in blocks)
             if (block.SValues.Contains(15) && block.SValues.Contains(100))
             {
@@ -231,19 +232,14 @@ public static class Converter
                     block.Lines.FindIndex(line => line.Contains("S100", StringComparison.OrdinalIgnoreCase));
                 if (indexOfS100 >= 0)
                 {
-                    // Remove all lines before S100, including the S15
                     block.Lines = block.Lines.Skip(indexOfS100).ToList();
-                    block.SValues.Remove(15); // Remove S15 since it's no longer in the block
+                    block.SValues.Remove(15);
                 }
             }
+    }
 
-        // Output final blocks along with non-block lines
-        _allNewLines.Clear();
-
-        // Add lines before the first block (if any)
-        foreach (var line in nonBlockLines) _allNewLines.Add(line);
-
-// Add blocks with their content
+    private static void AddBlocksToOutput(List<Block> blocks)
+    {
         var blockNumber = 1;
         for (var i = 0; i < blocks.Count; i++)
         {
@@ -252,16 +248,23 @@ public static class Converter
             if (nextBlock != null && block.HasSameXyValues(nextBlock))
                 continue;
 
+            if (block.Lines.Count > 0 && block.Lines[0].Contains("M3", StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = block.Lines[0].Split("M3", 2);
+                if (parts.Length == 2)
+                {
+                    block.Lines[0] = parts[0].Trim();
+                    block.Lines.Insert(1, "M3 " + parts[1].Trim());
+                }
+            }
+
             block.Lines[^1] = block.Lines[^1].Replace("M5", "").Trim();
             block.Lines.Add("M5");
-            
+
             _allNewLines.Add($"(Block {blockNumber++})");
             _allNewLines.AddRange(block.Lines);
         }
-        
-        _allNewLines.Add("M30");
     }
-
 
     private class Block
     {
@@ -279,11 +282,7 @@ public static class Converter
             var yMatchPercentage = YValues.Count > 0 ? (double)sameYCount / YValues.Count * 100 : 0;
 
             var combinedMatchPercentage = (xMatchPercentage + yMatchPercentage) / 2;
-
-            Debug.WriteLine($"Combined X and Y values match: {combinedMatchPercentage}%");
-
             return combinedMatchPercentage >= 100 - tolerance;
         }
     }
-
 }
