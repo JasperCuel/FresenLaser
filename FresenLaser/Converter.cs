@@ -260,6 +260,7 @@ public static class Converter
 
             block.Lines[^1] = block.Lines[^1].Replace("M5", "").Trim();
             block.Lines.Add("M5");
+            block.Lines.Add("G4 P0");
 
             _allNewLines.Add($"(Block {blockNumber++})");
             _allNewLines.AddRange(block.Lines);
