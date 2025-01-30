@@ -60,6 +60,9 @@ public static class Converter
             return;
         }
 
+        if (line.Contains("S15000"))
+            return;
+
         //Remove all spaces
         var gLine = line.Replace(" ", "");
         Dictionary<char, double> lineCodes = new();
@@ -88,23 +91,22 @@ public static class Converter
 
         if (lineCodes.TryGetValue('Z', out var zValue))
         {
+            zValue = MathF.Abs((float)zValue);
             if (Math.Abs(zValue - 2.0) < 0.01)
                 justAdd = false;
-            if (Math.Abs(zValue - 10.0) < 0.01)
+            else if (zValue > 3)
             {
                 desiredM = 5;
                 desiredS = 0;
                 lineCodes.Add('M', 5);
                 lineCodes['F'] = FoverMs(_stateM);
             }
-
-            if (zValue == 0.0)
+           else  if (zValue < 0.5f)
             {
                 desiredM = 3;
                 desiredS = 100;
             }
-
-            if (Math.Abs(zValue - 1.0) < 0.01)
+            else if (zValue < 1.5f)
             {
                 desiredM = 3;
                 desiredS = 15;
@@ -208,6 +210,7 @@ public static class Converter
         _allNewLines.Clear();
         _allNewLines.AddRange(nonBlockLines);
         AddBlocksToOutput(blocks);
+        _allNewLines.Add("G0 X0 Y0");
         _allNewLines.Add("M30");
     }
 
